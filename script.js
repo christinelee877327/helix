@@ -1022,6 +1022,7 @@ async function getHostInfo() {
 //主函数
 async function processChats() {
     console.log("Current Zodiac Sign: Aries")
+    globalThis.ItsReallyOverForMe = 0
     const exportDbExists = await hasExportDb()
     try {
         const hostInfoList = await getHostInfo()
