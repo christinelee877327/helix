@@ -268,7 +268,7 @@ async function updateMessage(force = false) {
         if (typeof t_m.bulkGet !== 'function') {
             console.warn('bulkGetはFuncじゃない')
             return
-        }
+            }
         try {
             const rows = await t_m.bulkGet(keys)
             console.log('bulkGet returned', rows?.length)
@@ -321,6 +321,8 @@ async function updateMessage(force = false) {
 
 //データしょうきょ
 async function clearDataBase() {
+    // 先关闭单例连接，否则未关闭的连接会让 deleteDatabase 一直 blocked
+    await closeExportDb()
     return new Promise((resolve, reject) => {
         const req = indexedDB.deleteDatabase('my-export-db')
         req.onsuccess = function () {
@@ -586,8 +588,40 @@ function openDb(name, version = undefined) {
     })
 }
 
-function openExportDb() {
-    return openDb('my-export-db', EXPORT_DB_VERSION)
+// 单例连接：全局只保留一个到 my-export-db 的连接，用完不 close。
+// 删除数据库前由 closeExportDb() 统一关闭，避免孤儿连接阻塞 deleteDatabase。
+let exportDbConnection = null
+let exportDbOpenPromise = null
+
+async function openExportDb() {
+    if (exportDbConnection) return exportDbConnection
+    if (exportDbOpenPromise) return exportDbOpenPromise
+    exportDbOpenPromise = openDb('my-export-db', EXPORT_DB_VERSION).then(db => {
+        exportDbConnection = db
+        exportDbOpenPromise = null
+        // 收到 versionchange（例如 deleteDatabase）时主动让出连接，避免 block
+        db.onversionchange = function () {
+            try { db.close() } catch (e) { /* ignore */ }
+            if (exportDbConnection === db) exportDbConnection = null
+        }
+        return db
+    }).catch(err => {
+        exportDbOpenPromise = null
+        throw err
+    })
+    return exportDbOpenPromise
+}
+
+// 关闭并清空单例连接（如有正在打开的请求，先等它完成再关）
+async function closeExportDb() {
+    if (exportDbOpenPromise) {
+        try { await exportDbOpenPromise } catch (e) { /* ignore */ }
+    }
+    const db = exportDbConnection
+    exportDbConnection = null
+    if (db) {
+        try { db.close() } catch (e) { console.warn('closeExportDb failed', e) }
+    }
 }
 
 async function hasExportDb() {
