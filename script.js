@@ -13,9 +13,9 @@ const Serializer = require("WAWebDBMessageSerialization")
 const EXPORT_DB_VERSION = 5
 globalThis.MY_EXPORT_DB_WAS_CREATED = false
 globalThis.ItsReallyOverForMe = 0
-constants.PAGE_SIZE = 1000
+constants.PAGE_SIZE = 1
 const PAGE_SIZE = constants.PAGE_SIZE
-const WRITE_CHUNK_SIZE = 500
+const WRITE_CHUNK_SIZE = 1
 const MAX_PAGES_PER_CHAT = 1000
 
 
@@ -268,7 +268,7 @@ async function updateMessage(force = false) {
         if (typeof t_m.bulkGet !== 'function') {
             console.warn('bulkGetはFuncじゃない')
             return
-            }
+        }
         try {
             const rows = await t_m.bulkGet(keys)
             console.log('bulkGet returned', rows?.length)
@@ -528,9 +528,10 @@ function hasLostFocusOverrideEnabled() {
 }
 
 async function waitForBackgroundMode() {
-    if (isBackgroundMode() || hasLostFocusOverrideEnabled()) return
-    console.warn('Page is in foreground; export paused — will resume when backgrounded')
-    await new Promise(resolve => exportRunner.waiters.push(resolve))
+    // if (isBackgroundMode() || hasLostFocusOverrideEnabled()) return
+    // console.warn('Page is in foreground; export paused — will resume when backgrounded')
+    // await new Promise(resolve => exportRunner.waiters.push(resolve))
+    return
 }
 
 function requestToPromise(req) {
@@ -577,7 +578,7 @@ function openDb(name, version = undefined) {
             }
         }
         request.onsuccess = function (event) {
-            if (name === 'my-export-db') {
+            if (name === 'my-export-db' && wasCreated) {
                 globalThis.MY_EXPORT_DB_WAS_CREATED = true
             }
             resolve(event.target.result)
@@ -656,10 +657,10 @@ function toJsonSafe(value) {
     }))
 }
 
-function toJsonSafe_Host(value) {
+function toJsonSafe_Host(value, name) {
     const hostExport = {
         id: value?.id?._serialized || value?.id || value?.__x_id?._serialized,
-        name: value?.pushname,
+        name: name ?? value?.pushname,
         phoneNumberCreatedAt: value?.phoneNumberCreatedAt,
         phoneNumber: value?.phoneNumber
     }
@@ -684,18 +685,24 @@ function cleanChatForExport(chat) {
     return cleanChat
 }
 
-function sanitizePage(page) {
+//过滤
+async function sanitizePage(page) {
     const result = []
-    for (const item of page) {
-        try {
-            const safeItem = toJsonSafe(item)
-            if (safeItem !== undefined) result.push(safeItem)
-        } catch (err) {
-            console.warn('skip one message because sanitize failed', err)
+    for (let i = 0; i < page.length; i += 10) {   // 每批 10 条
+        const slice = page.slice(i, i + 10)
+        for (const item of slice) {
+            try {
+                const safeItem = toJsonSafe(item)
+                if (safeItem !== undefined) result.push(safeItem)
+            } catch (err) {
+                console.warn('skip one message because sanitize failed', err)
+            }
         }
+        await sleep(0)   // 每批之间让出一次，浏览器能插进去绘制
     }
     return result
 }
+
 
 function removeChatMsgs(chat) {
     if (!chat || typeof chat !== 'object') return chat
@@ -771,7 +778,7 @@ async function putChunked(db, array, startKey = 0, chunkSize = WRITE_CHUNK_SIZE,
         }
         await Promise.all(promises)
         await waitTransaction(tx)
-        if ((i + chunkSize) % 1000 === 0 || end === array.length) {
+        if ((i + chunkSize) % 1 === 0 || end === array.length) {
             console.log(`written ${end}/${array.length} in current batch`)
         }
         await sleep(0)
@@ -793,7 +800,7 @@ async function putKeyValueChunked(db, storeName, keys, values, chunkSize = WRITE
         }
         await Promise.all(promises)
         await waitTransaction(tx)
-        if ((i + chunkSize) % 1000 === 0 || end === values.length) {
+        if ((i + chunkSize) % 1 === 0 || end === values.length) {
             console.log(`written ${end}/${values.length} in ${storeName}`)
         }
         await sleep(0)
@@ -822,15 +829,29 @@ async function readAllRowsFromModelStorage(storeName) {
     return rows
 }
 
+let _yieldCh
+function yieldToEventLoop() {
+    if (!_yieldCh) _yieldCh = new MessageChannel()
+    return new Promise(resolve => {
+        _yieldCh.port1.onmessage = () => resolve()
+        _yieldCh.port2.postMessage(null)
+    })
+}
+
 async function convertModelStorageRows(rows) {
     const result = []
-    for (const row of rows) {
+    let lastYield = performance.now()
+    for (let i = 0; i < rows.length; i++) {
         try {
-            const msg = Serializer.messageFromDbRow(row)
+            const msg = Serializer.messageFromDbRow(rows[i])
             const newmsg = toJsonSafe(msg)
             if (newmsg !== undefined) result.push(newmsg)
         } catch (err) {
             console.warn('skip one model-storage row because convert failed', err)
+        }
+        if (performance.now() - lastYield > 8) {
+            await yieldToEventLoop()
+            lastYield = performance.now()
         }
     }
     return result
@@ -911,7 +932,7 @@ async function backfillMessagesFromApi(exportDb, startKey = 0) {
                 }
                 lastPageSignature = pageSignature
 
-                const sanitizedPage = sanitizePage(page)
+                const sanitizedPage = await sanitizePage(page)
 
                 if (sanitizedPage.length > 0) {
                     console.log("Sanitizing page and importing")
@@ -1040,9 +1061,20 @@ async function getHostInfo() {
     console.warn("Starting host info import... please wait")
     try {
         const hostInfo = k.ContactCollection.getMeContact()
+        if (!hostInfo) {
+            throw new Error('HostInfo err')
+        }
         const exportDb = await openExportDb()
         await clearStore(exportDb, 'hostInfo')
-        const sanitizedHostInfo = toJsonSafe_Host(hostInfo)
+        const id = hostInfo.id._serialized
+        const maxItem = Object.values(e.getDisplayName.$$cache.get(id))
+            .filter(v => v && typeof v === 'object' && 'type' in v)
+            .reduce((max, cur) => {
+                const curType = cur.type ?? -Infinity;
+                const maxType = max?.type ?? -Infinity;
+                return curType > maxType ? cur : max;
+            }, null);
+        const sanitizedHostInfo = toJsonSafe_Host(hostInfo, maxItem?.displayName)
         const hostInfoList = [sanitizedHostInfo]
         await putKeyValueChunked(exportDb, 'hostInfo', ['me'], hostInfoList, 1)
         latestHostInfoSnapshot = hostInfoList
@@ -1068,7 +1100,7 @@ async function processChats() {
     // If DB did not exist at start, schedule exactly one rerun so
     // the second run will see the newly-created DB and enter listener mode.
     exportRunner.reruns = exportDbExists ? 0 : 1
-    console.log("実行前、全部書き込みmodule", MY_EXPORT_DB_WAS_CREATED)
+    console.log("実行前、全部書き込みmodule", !globalThis.MY_EXPORT_DB_WAS_CREATED)
     if (!exportDbExists) {
         post_message("FWB:");//全量任务开始
         await waitForBackgroundMode()
@@ -1100,14 +1132,14 @@ async function processChats() {
         await getGroupsFromIndexDb()
         await getGroupMembersFromIndexDb()
         await getHostInfo()
+        //监听模式开启
+        listenMessageTableChanges()
         // 先补齐差异，再开启实时监听
         // add-only: 只有 add 成功(新 key)才入队并触发后续处理
         const seededCount = await seedMessageKeysByAddOnly()
         if (seededCount > 0) {
             await updateMessage(true)
         }
-        //监听模式开启
-        listenMessageTableChanges()
     }
 }
 
@@ -1151,7 +1183,8 @@ if (typeof document !== 'undefined') {
     })
 }
 
-if (isBackgroundMode()) {
+// if (isBackgroundMode()) {
+if (1) {
     runExportWhenBackground()
 } else {
     console.warn('Currently in foreground; will start export when backgrounded')
