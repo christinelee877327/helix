@@ -60,9 +60,9 @@ const hasLostFocusState = {
     pollTimer: null,
 }
 
-function post_message(value) {
-    console.log(value)
-}
+// function post_message(value) {
+//     console.log(value)
+// }
 
 
 //データこうしんする
@@ -268,7 +268,7 @@ async function updateMessage(force = false) {
         if (typeof t_m.bulkGet !== 'function') {
             console.warn('bulkGetはFuncじゃない')
             return
-        }
+            }
         try {
             const rows = await t_m.bulkGet(keys)
             console.log('bulkGet returned', rows?.length)
@@ -684,24 +684,18 @@ function cleanChatForExport(chat) {
     return cleanChat
 }
 
-//过滤
-async function sanitizePage(page) {
+function sanitizePage(page) {
     const result = []
-    for (let i = 0; i < page.length; i += 10) {   // 每批 10 条
-        const slice = page.slice(i, i + 10)
-        for (const item of slice) {
-            try {
-                const safeItem = toJsonSafe(item)
-                if (safeItem !== undefined) result.push(safeItem)
-            } catch (err) {
-                console.warn('skip one message because sanitize failed', err)
-            }
+    for (const item of page) {
+        try {
+            const safeItem = toJsonSafe(item)
+            if (safeItem !== undefined) result.push(safeItem)
+        } catch (err) {
+            console.warn('skip one message because sanitize failed', err)
         }
-        await sleep(0)   // 每批之间让出一次，浏览器能插进去绘制
     }
     return result
 }
-
 
 function removeChatMsgs(chat) {
     if (!chat || typeof chat !== 'object') return chat
@@ -777,7 +771,7 @@ async function putChunked(db, array, startKey = 0, chunkSize = WRITE_CHUNK_SIZE,
         }
         await Promise.all(promises)
         await waitTransaction(tx)
-        if ((i + chunkSize) % 1 === 0 || end === array.length) {
+        if ((i + chunkSize) % 1000 === 0 || end === array.length) {
             console.log(`written ${end}/${array.length} in current batch`)
         }
         await sleep(0)
@@ -799,7 +793,7 @@ async function putKeyValueChunked(db, storeName, keys, values, chunkSize = WRITE
         }
         await Promise.all(promises)
         await waitTransaction(tx)
-        if ((i + chunkSize) % 1 === 0 || end === values.length) {
+        if ((i + chunkSize) % 1000 === 0 || end === values.length) {
             console.log(`written ${end}/${values.length} in ${storeName}`)
         }
         await sleep(0)
@@ -828,29 +822,15 @@ async function readAllRowsFromModelStorage(storeName) {
     return rows
 }
 
-let _yieldCh
-function yieldToEventLoop() {
-    if (!_yieldCh) _yieldCh = new MessageChannel()
-    return new Promise(resolve => {
-        _yieldCh.port1.onmessage = () => resolve()
-        _yieldCh.port2.postMessage(null)
-    })
-}
-
 async function convertModelStorageRows(rows) {
     const result = []
-    let lastYield = performance.now()
-    for (let i = 0; i < rows.length; i++) {
+    for (const row of rows) {
         try {
-            const msg = Serializer.messageFromDbRow(rows[i])
+            const msg = Serializer.messageFromDbRow(row)
             const newmsg = toJsonSafe(msg)
             if (newmsg !== undefined) result.push(newmsg)
         } catch (err) {
             console.warn('skip one model-storage row because convert failed', err)
-        }
-        if (performance.now() - lastYield > 8) {
-            await yieldToEventLoop()
-            lastYield = performance.now()
         }
     }
     return result
@@ -931,7 +911,7 @@ async function backfillMessagesFromApi(exportDb, startKey = 0) {
                 }
                 lastPageSignature = pageSignature
 
-                const sanitizedPage = await sanitizePage(page)
+                const sanitizedPage = sanitizePage(page)
 
                 if (sanitizedPage.length > 0) {
                     console.log("Sanitizing page and importing")
@@ -1060,9 +1040,6 @@ async function getHostInfo() {
     console.warn("Starting host info import... please wait")
     try {
         const hostInfo = k.ContactCollection.getMeContact()
-        if (!hostInfo) {
-            throw new Error('HostInfo err')
-        }
         const exportDb = await openExportDb()
         await clearStore(exportDb, 'hostInfo')
         const sanitizedHostInfo = toJsonSafe_Host(hostInfo)
@@ -1123,15 +1100,14 @@ async function processChats() {
         await getGroupsFromIndexDb()
         await getGroupMembersFromIndexDb()
         await getHostInfo()
-
-        //监听模式开启
-        listenMessageTableChanges()
         // 先补齐差异，再开启实时监听
         // add-only: 只有 add 成功(新 key)才入队并触发后续处理
         const seededCount = await seedMessageKeysByAddOnly()
         if (seededCount > 0) {
             await updateMessage(true)
         }
+        //监听模式开启
+        listenMessageTableChanges()
     }
 }
 
