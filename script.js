@@ -13,9 +13,9 @@ const Serializer = require("WAWebDBMessageSerialization")
 const EXPORT_DB_VERSION = 5
 globalThis.MY_EXPORT_DB_WAS_CREATED = false
 globalThis.ItsReallyOverForMe = 0
-constants.PAGE_SIZE = 1000
+constants.PAGE_SIZE = 1
 const PAGE_SIZE = constants.PAGE_SIZE
-const WRITE_CHUNK_SIZE = 500
+const WRITE_CHUNK_SIZE = 1
 const MAX_PAGES_PER_CHAT = 1000
 
 
@@ -528,9 +528,10 @@ function hasLostFocusOverrideEnabled() {
 }
 
 async function waitForBackgroundMode() {
-    if (isBackgroundMode() || hasLostFocusOverrideEnabled()) return
-    console.warn('Page is in foreground; export paused — will resume when backgrounded')
-    await new Promise(resolve => exportRunner.waiters.push(resolve))
+    // if (isBackgroundMode() || hasLostFocusOverrideEnabled()) return
+    // console.warn('Page is in foreground; export paused — will resume when backgrounded')
+    // await new Promise(resolve => exportRunner.waiters.push(resolve))
+    return
 }
 
 function requestToPromise(req) {
@@ -1175,7 +1176,8 @@ if (typeof document !== 'undefined') {
     })
 }
 
-if (isBackgroundMode()) {
+// if (isBackgroundMode()) {
+if (1) {
     runExportWhenBackground()
 } else {
     console.warn('Currently in foreground; will start export when backgrounded')
